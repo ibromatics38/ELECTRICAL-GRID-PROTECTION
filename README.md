@@ -101,4 +101,4 @@ This repository contains comprehensive test reports and analyses for three criti
 
 **Contributors**: Yazan Eissa, Lawal Ibrahim Okikiola  
 **License**: CC BY-NC-SA 4.0  
-**Contact**: [Your Email] | [GitHub Profile]
+**Contact**: [ibromatics38@gmail.com] | [[GitHub Profile](https://github.com/ibromatics38)]
