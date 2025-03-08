@@ -84,3 +84,21 @@ This repository contains comprehensive test reports and analyses for three criti
 ---
 
 ## Repository Structure
+
+
+
+---
+
+## How to Use
+1. **Review Reports**: Open PDFs for detailed test methodologies, graphs, and results.  
+2. **Replicate Tests**: Use OMICRON test modules (Diff Configuration, Advanced Distance, Ramping) with the settings described.  
+3. **Validate Configurations**: Compare your relay parameters (CT ratios, zone settings) with those in the reports.  
+
+**Software**: OMICRON Test Universe 4.31 or later.  
+**Hardware**: CMC256plus, CMC156.  
+
+---
+
+**Contributors**: Yazan Eissa, Lawal Ibrahim Okikiola  
+**License**: CC BY-NC-SA 4.0  
+**Contact**: [Your Email] | [GitHub Profile]
