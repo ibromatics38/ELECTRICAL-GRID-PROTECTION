@@ -50,8 +50,25 @@ config.small_signal.enable = true;
 config.small_signal.use_linearization = false; % set true if linearize() model workflow is available
 config.small_signal.report_top_n = 3;
 
-fprintf('\n=== GFL Stability Benchmark v6 ===\n');
-fprintf('Dataset: %d SCR x %d R/X = %d cases (shared across methods)\n', ...
+% Validate soft-score weights
+w = config.weights;
+wsum = w.current + w.frequency + w.finalBias + w.damping + w.settling + w.rocof;
+assert(abs(wsum - 1.0) < 1e-6, 'Weights must sum to 1.0');
+
+fprintf('\n');
+fprintf('╔═══════════════════════════════════════════════════════════════════╗\n');
+fprintf('║   AI-ASSISTED GFL INVERTER STABILITY ANALYSIS (v6.0)             ║\n');
+fprintf('║   Author: LAWAL IBRAHIM OKIKIOLA                                 ║\n');
+fprintf('╠═══════════════════════════════════════════════════════════════════╣\n');
+fprintf('║   HARD CRITERIA                                                   ║\n');
+fprintf('║     H1: I_peak ≤ %.2f p.u.                                        ║\n', config.criteria.I_peak_pu_max);
+fprintf('║     H2: |Δf_trans| ≤ %.1f Hz                                      ║\n', config.criteria.f_dev_transient_Hz);
+fprintf('║     H3: |Δf_final| ≤ %.2f Hz                                      ║\n', config.criteria.f_dev_final_Hz);
+fprintf('║     H4: ζ ≥ %.0f%%                                                ║\n', config.criteria.zeta_min*100);
+fprintf('║     H5: T_settle ≤ %.1f s                                        ║\n', config.criteria.T_settle_max_s);
+fprintf('║     H6: RoCoF ≤ %.1f Hz/s                                        ║\n', config.criteria.rocof_max_Hzps);
+fprintf('╚═══════════════════════════════════════════════════════════════════╝\n');
+fprintf('Dataset: %d SCR x %d R/X = %d cases (shared across methods)\n\n', ...
     numel(config.SCR_list), numel(config.RX_list), numel(config.SCR_list)*numel(config.RX_list));
 
 %% ===================== PHASE 1: LABEL COMMON DATASET ====================
@@ -107,6 +124,10 @@ fprintf('Trainable labeled cases: %d/%d\n', numel(idxTrain), nCases);
 methods = fit_all_methods(X_train, Y_taus, Y_tspll);
 
 %% ===================== PHASE 3: FAIR EVALUATION =========================
+fprintf('\n');
+fprintf('═══════════════════════════════════════════════════════════════════\n');
+fprintf('PHASE 3: EVALUATING ALL METHODS ON %d CASES\n', nCases);
+fprintf('═══════════════════════════════════════════════════════════════════\n');
 strategies = {'Baseline','LinearPLL','LinearBoth','LookupTable','GPR_AI'};
 results = repmat(struct(), nCases, 1);
 
@@ -139,6 +160,17 @@ for i = 1:nS
                 results(k).([fns{f} '_' strat]) = d.(fns{f});
             end
         end
+
+        fprintf('[%3d/%d] SCR=%.2f RX=%.2f: ', k, nCases, SCR, RX);
+        for s2 = 1:numel(strategies)
+            st2 = strategies{s2};
+            if results(k).(['stable_' st2])
+                fprintf('%s=%.2f ', st2(1), results(k).(['score_' st2]));
+            else
+                fprintf('%s=FAIL ', st2(1));
+            end
+        end
+        fprintf('\n');
     end
 end
 
@@ -510,7 +542,7 @@ for s=1:nS
     st=strategies{s};
     vals(:,s) = [results(weak).(['rocof_' st])]';
 end
-bar(mean(vals,1));
+bar(mean(vals,1,'omitnan'));
 set(gca,'XTick',1:nS,'XTickLabel',strategies); ylabel('Mean RoCoF in weak grid (Hz/s)');
 title('SS4: Weak-grid dynamic sensitivity'); grid on;
 saveas(f, fullfile(config.output_dir,'ss4_weakgrid_rocof.png'));
