@@ -102,3 +102,23 @@ This repository contains comprehensive test reports and analyses for three criti
 **Contributors**: Yazan Eissa, Lawal Ibrahim Okikiola  
 **License**: CC BY-NC-SA 4.0  
 **Contact**: [ibromatics38@gmail.com] | [[GitHub Profile](https://github.com/ibromatics38)]
+
+
+## GFL Converter Stability Benchmark (MATLAB/Simulink)
+This repository now includes `GFL_STABILITY_STUDY_v6.m`, an end-to-end benchmark script for **fair** controller tuning comparison across:
+- Baseline
+- LinearPLL
+- LinearBoth
+- LookupTable
+- GPR_AI
+
+### What is improved
+- A single shared dataset (`SCR_list × RX_list`) is used to train and evaluate all methods.
+- Stability is assessed with explicit hard criteria `H1..H6` (including corrected final-frequency and RoCoF limit).
+- Extended analytics generate 10 figures (rates, heatmaps, failure breakdown, RoCoF boxplot, damping CDF, parameter surfaces, Pareto plot).
+
+### Run
+1. Ensure Simulink model `GFL_LCL_WeakGrid_AI` is on MATLAB path.
+2. Run `GFL_STABILITY_STUDY_v6` in MATLAB.
+3. Outputs are saved under `results_v6/` (PNG figures + MAT file).
+
