@@ -42,6 +42,12 @@ config.criteria.zeta_min           = 0.02;  % H4
 config.criteria.T_settle_max_s     = 2.00;  % H5
 config.criteria.rocof_max_Hzps     = 2.00;  % H6
 
+% Compromise/operational thresholds for weak-grid edge cases.
+% Strict thresholds are still reported separately for publication-grade checks.
+config.criteria.acceptable_f_dev_final_Hz = 0.15;
+config.criteria.acceptable_T_settle_max_s = 3.00;
+config.criteria.acceptable_rocof_max_Hzps = 3.00;
+
 % Soft weights (sum to 1)
 config.weights = struct('current',0.20,'frequency',0.25,'finalBias',0.15,'damping',0.20,'settling',0.10,'rocof',0.10);
 
@@ -67,6 +73,9 @@ fprintf('║     H3: |Δf_final| ≤ %.2f Hz                                    
 fprintf('║     H4: ζ ≥ %.0f%%                                                ║\n', config.criteria.zeta_min*100);
 fprintf('║     H5: T_settle ≤ %.1f s                                        ║\n', config.criteria.T_settle_max_s);
 fprintf('║     H6: RoCoF ≤ %.1f Hz/s                                        ║\n', config.criteria.rocof_max_Hzps);
+fprintf('║   ACCEPTABLE (compromise) criteria                               ║\n');
+fprintf('║     H3a: |Δf_final| ≤ %.2f Hz, H5a: T_settle ≤ %.1f s            ║\n', config.criteria.acceptable_f_dev_final_Hz, config.criteria.acceptable_T_settle_max_s);
+fprintf('║     H6a: RoCoF ≤ %.1f Hz/s                                       ║\n', config.criteria.acceptable_rocof_max_Hzps);
 fprintf('╚═══════════════════════════════════════════════════════════════════╝\n');
 fprintf('Dataset: %d SCR x %d R/X = %d cases (shared across methods)\n\n', ...
     numel(config.SCR_list), numel(config.RX_list), numel(config.SCR_list)*numel(config.RX_list));
@@ -90,7 +99,7 @@ for i = 1:nS
                 if ~bandwidth_ok(taus, tspll, config.bw_separation), continue; end
                 [m, ok] = run_simulation(config, params, taus, tspll);
                 if ~ok, continue; end
-                [is_stable, score] = evaluate_stability_v6(m, config);
+                [is_stable, score, details] = evaluate_stability_v6(m, config);
 
                 pen = compute_violation_index(m, config.criteria);
                 if pen < bestPenalty
@@ -99,7 +108,7 @@ for i = 1:nS
                     best_penalty_tspll = tspll;
                 end
 
-                if is_stable
+                if details.is_acceptable
                     stableCount = stableCount + 1;
                     if score > bestScore
                         bestScore = score; best_taus = taus; best_tspll = tspll;
@@ -118,7 +127,7 @@ for i = 1:nS
             training_data(k).best_score = max(bestScore,0);
             training_data(k).has_stable = true;
             training_data(k).label_quality = 1;
-            fprintf('[%3d/%d] SCR=%4.2f RX=%4.2f stable_cfg=%2d best=%.3f\n',k,nCases,SCR,RX,stableCount,bestScore);
+            fprintf('[%3d/%d] SCR=%4.2f RX=%4.2f acceptable_cfg=%2d best=%.3f\n',k,nCases,SCR,RX,stableCount,bestScore);
         else
             % Fallback label keeps training set complete even when criteria are strict
             training_data(k).best_taus = best_penalty_taus;
@@ -394,8 +403,17 @@ details.H4 = m.zeta >= c.zeta_min;
 details.H5 = m.T_settle <= c.T_settle_max_s;
 details.H6 = m.rocof_max <= c.rocof_max_Hzps;
 
-is_stable = details.H1 && details.H2 && details.H3 && details.H4 && details.H5 && details.H6;
-if ~is_stable
+% Acceptable/compromise checks for practical weak-grid operation.
+details.H3a = m.f_final_dev <= c.acceptable_f_dev_final_Hz;
+details.H5a = m.T_settle <= c.acceptable_T_settle_max_s;
+details.H6a = m.rocof_max <= c.acceptable_rocof_max_Hzps;
+
+details.is_strict = details.H1 && details.H2 && details.H3 && details.H4 && details.H5 && details.H6;
+details.is_acceptable = details.H1 && details.H2 && details.H4 && details.H3a && details.H5a && details.H6a;
+
+% Final decision uses acceptable tier, strict tier retained for reporting.
+is_stable = details.is_acceptable;
+if ~details.is_acceptable
     score = 0; return;
 end
 
@@ -407,12 +425,18 @@ S4 = max(0, min(1, (m.zeta-c.zeta_min)/(0.20-c.zeta_min)));
 S5 = max(0, min(1, 1 - m.T_settle/c.T_settle_max_s));
 S6 = max(0, min(1, 1 - m.rocof_max/c.rocof_max_Hzps));
 score = w.current*S1 + w.frequency*S2 + w.finalBias*S3 + w.damping*S4 + w.settling*S5 + w.rocof*S6;
+
+% Slight penalty when only acceptable tier passes (not strict tier).
+if ~details.is_strict
+    score = 0.85 * score;
+end
 end
 
 function [is_stable, score, details] = fail_stub()
 is_stable = false; score = 0;
 details = struct('I_peak',NaN,'f_max_dev',NaN,'f_final_dev',NaN,'zeta',NaN,'T_settle',NaN,'rocof',NaN, ...
-    'H1',false,'H2',false,'H3',false,'H4',false,'H5',false,'H6',false);
+    'H1',false,'H2',false,'H3',false,'H4',false,'H5',false,'H6',false, ...
+    'H3a',false,'H5a',false,'H6a',false,'is_strict',false,'is_acceptable',false);
 end
 
 
@@ -435,19 +459,24 @@ function summary = summarize_results(results, strategies)
 for s = 1:numel(strategies)
     st = strategies{s};
     stable = [results.(['stable_' st])];
+    strict = [results.(['is_strict_' st])];
     sc = [results.(['score_' st])];
     summary.(st).n_stable = sum(stable);
     summary.(st).rate = 100*mean(stable);
+    summary.(st).n_strict = sum(strict);
+    summary.(st).strict_rate = 100*mean(strict);
     summary.(st).mean_score = mean(sc(stable)); if isnan(summary.(st).mean_score), summary.(st).mean_score = 0; end
 end
 end
 
 function print_summary(summary, nCases)
-fprintf('\n%-12s %10s %10s %12s\n','Strategy','Stable','Rate(%)','MeanScore');
+fprintf('\n%-12s %10s %10s %10s %10s %12s\n','Strategy','Accept','Acc(%)','Strict','Str(%)','MeanScore');
 fields = fieldnames(summary);
 for i = 1:numel(fields)
     st = fields{i};
-    fprintf('%-12s %5d/%-4d %9.1f %12.3f\n', st, summary.(st).n_stable, nCases, summary.(st).rate, summary.(st).mean_score);
+    fprintf('%-12s %5d/%-4d %9.1f %5d/%-4d %9.1f %12.3f\n', st, ...
+        summary.(st).n_stable, nCases, summary.(st).rate, ...
+        summary.(st).n_strict, nCases, summary.(st).strict_rate, summary.(st).mean_score);
 end
 end
 
