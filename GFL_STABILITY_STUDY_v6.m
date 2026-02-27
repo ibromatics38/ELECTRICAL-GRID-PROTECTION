@@ -17,6 +17,8 @@ clear; clc; close all;
 
 %% =============================== CONFIG ================================
 config.modelName = 'GFL_LCL_WeakGrid_AI';
+config.debug.show_sim_errors = true;
+config.debug.max_error_logs_per_case = 2;
 config.T_end = 5.0;
 config.T_stp = 1.3;
 config.output_dir = fullfile(pwd, 'results_v6');
@@ -111,7 +113,7 @@ for i = 1:nS
         params = get_base_params(config, SCR, RX);
 
         bestScore = -Inf; best_taus = NaN; best_tspll = NaN; stableCount = 0;
-        n_bw_skipped = 0; n_sim_ok = 0;
+        n_bw_skipped = 0; n_sim_ok = 0; n_sim_fail = 0; case_error_logs = 0;
         bestPenalty = Inf; best_penalty_taus = NaN; best_penalty_tspll = NaN;
         for taus = config.taus_sweep
             for tspll = config.tspll_sweep
@@ -119,8 +121,16 @@ for i = 1:nS
                     n_bw_skipped = n_bw_skipped + 1;
                     continue;
                 end
-                [m, ok] = run_simulation(config, params, taus, tspll);
-                if ~ok, continue; end
+                [m, ok, errMsg] = run_simulation(config, params, taus, tspll);
+                if ~ok
+                    n_sim_fail = n_sim_fail + 1;
+                    if config.debug.show_sim_errors && case_error_logs < config.debug.max_error_logs_per_case
+                        fprintf('    sim-fail SCR=%.2f RX=%.2f taus=%.4fms tspll=%.1fms -> %s\n', ...
+                            SCR, RX, taus*1e3, tspll*1e3, errMsg);
+                        case_error_logs = case_error_logs + 1;
+                    end
+                    continue;
+                end
                 n_sim_ok = n_sim_ok + 1;
                 [is_stable, score, details] = evaluate_stability_v6(m, config, SCR);
 
@@ -150,7 +160,7 @@ for i = 1:nS
             training_data(k).best_score = max(bestScore,0);
             training_data(k).has_stable = true;
             training_data(k).label_quality = 1;
-            fprintf('[%3d/%d] SCR=%4.2f RX=%4.2f acceptable_cfg=%2d sim_ok=%2d bw_skip=%2d best=%.3f\n',k,nCases,SCR,RX,stableCount,n_sim_ok,n_bw_skipped,bestScore);
+            fprintf('[%3d/%d] SCR=%4.2f RX=%4.2f acceptable_cfg=%2d sim_ok=%2d sim_fail=%2d bw_skip=%2d best=%.3f\n',k,nCases,SCR,RX,stableCount,n_sim_ok,n_sim_fail,n_bw_skipped,bestScore);
         else
             % Fallback label keeps training set complete even when criteria are strict
             training_data(k).best_taus = best_penalty_taus;
@@ -158,7 +168,7 @@ for i = 1:nS
             training_data(k).best_score = 0;
             training_data(k).has_stable = false;
             training_data(k).label_quality = 0;
-            fprintf('[%3d/%d] SCR=%4.2f RX=%4.2f NO-STABLE-LABEL sim_ok=%2d bw_skip=%2d -> fallback penalty=%.3f\n',k,nCases,SCR,RX,n_sim_ok,n_bw_skipped,bestPenalty);
+            fprintf('[%3d/%d] SCR=%4.2f RX=%4.2f NO-STABLE-LABEL sim_ok=%2d sim_fail=%2d bw_skip=%2d -> fallback penalty=%.3f\n',k,nCases,SCR,RX,n_sim_ok,n_sim_fail,n_bw_skipped,bestPenalty);
         end
     end
 end
@@ -195,7 +205,7 @@ for i = 1:nS
 
             results(k).(['taus_' strat]) = taus;
             results(k).(['tspll_' strat]) = tspll;
-            [m, ok] = run_simulation(config, params, taus, tspll);
+            [m, ok, ~] = run_simulation(config, params, taus, tspll);
             if ~ok
                 [is_stable, score, d] = fail_stub();
             else
@@ -325,9 +335,10 @@ taus = max(0.3e-3,min(8e-3,taus));
 tspll = max(0.012,min(0.200,tspll));
 end
 
-function [metrics, success] = run_simulation(config, params, taus, tspll)
+function [metrics, success, errMsg] = run_simulation(config, params, taus, tspll)
 metrics = struct('I_peak_pu',NaN,'f_max_dev',NaN,'f_final_dev',NaN,'zeta',NaN,'T_settle',NaN,'rocof_max',NaN,'decay_ratio',NaN,'psi',0);
 success = false;
+errMsg = '';
 try
     xi = 0.707;
     omega_pll = 4/(tspll*xi);
@@ -342,8 +353,11 @@ try
     assignin('base','ki_pll',ki_pll); assignin('base','kp_s',kp_s); assignin('base','ki_s',ki_s);
     assignin('base','T_stp',params.T_stp); assignin('base','T_end',params.T_end);
 
-    load_system(config.modelName);
-    simOut = sim(config.modelName, 'StopTime', num2str(params.T_end));
+    modelBase = regexprep(config.modelName, '\\.(slx|mdl)$', '');
+    if ~bdIsLoaded(modelBase)
+        load_system(config.modelName);
+    end
+    simOut = sim(modelBase, 'StopTime', num2str(params.T_end));
 
     t = simOut.tout(:);
     is_abc = extract_current(simOut);
@@ -383,7 +397,8 @@ try
     metrics.psi = 0.22*mI + 0.22*mFtr + 0.18*mFfin + 0.18*mR + 0.20*mDyn;
 
     success = true;
-catch
+catch ME
+    errMsg = ME.message;
 end
 end
 

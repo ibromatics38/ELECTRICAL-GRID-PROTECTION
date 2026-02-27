@@ -128,4 +128,5 @@ This repository now includes `GFL_STABILITY_STUDY_v6.m`, an end-to-end benchmark
 2. Run `GFL_STABILITY_STUDY_v6` in MATLAB.
 3. Outputs are saved under `results_v6/` (PNG figures + MAT file).
 4. Current practical bandwidth gate is `omega_PLL <= 0.5 * omega_CI` (adjustable in config).
+5. Debug tips: set `config.debug.show_sim_errors = true` to print per-case simulation errors (useful if `sim_ok=0` with many fallbacks).
 
