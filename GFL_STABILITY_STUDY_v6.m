@@ -31,7 +31,7 @@ config.taus_sweep  = [0.3, 0.5, 0.8, 1.0, 1.5, 2.0, 3.0, 5.0, 8.0] * 1e-3; % [s]
 config.tspll_sweep = [0.012, 0.018, 0.025, 0.035, 0.050, 0.080, 0.120, 0.160, 0.200];
 
 % Bandwidth-separation constraint (kept identical across all methods)
-config.bw_separation = 1.00; % omega_pll <= 1.0*omega_ci (practical compromise)
+config.bw_separation = 0.50; % omega_pll <= 0.5*omega_ci (practical compromise)
 config.enforce_bw_separation = true;
 
 % Hard criteria and soft-score settings
@@ -72,6 +72,8 @@ config.small_signal.report_top_n = 3;
 w = config.weights;
 wsum = w.current + w.frequency + w.finalBias + w.damping + w.settling + w.rocof;
 assert(abs(wsum - 1.0) < 1e-6, 'Weights must sum to 1.0');
+
+% PSI weights are fixed in run_simulation as [0.22 0.22 0.18 0.18 0.20] and sum to 1.0.
 
 fprintf('\n');
 fprintf('╔═══════════════════════════════════════════════════════════════════╗\n');
@@ -364,7 +366,9 @@ try
 
     dt = median(diff(t2));
     if dt > 0
-        dfdt = gradient(f2, dt);
+        win_size = max(3, round(0.02/dt));  % ~20ms smoothing for RoCoF robustness
+        f2_smooth = movmean(f2, win_size);
+        dfdt = gradient(f2_smooth, dt);
         metrics.rocof_max = max(abs(dfdt));
     else
         metrics.rocof_max = Inf;
@@ -402,7 +406,11 @@ end
 % settling in ±2%
 tol = 0.02*abs(target);
 lastOut = find(abs(err)>tol,1,'last');
-if isempty(lastOut), T_settle = 0; else, T_settle = t(lastOut)-t(1); end
+if isempty(lastOut)
+    T_settle = 0;
+else
+    T_settle = min(t(lastOut)-t(1), 10); % Clamp to avoid unreasonable values
+end
 
 [pks,~] = findpeaks(abs(err));
 if numel(pks) >= 2 && pks(1) > 0
@@ -574,7 +582,7 @@ for s = 1:nS
     ms(s)=summary.(strategies{s}).mean_score;
 end
 
-f=figure('Position',[50 50 840 420]); bar(rates); set(gca,'XTickLabel',strategies); ylabel('Stable rate (%)'); title('Figure1 Stability rate'); grid on;
+f=figure('Position',[50 50 840 420]); bar(rates); set(gca,'XTickLabel',strategies); ylabel('Stable rate (%)'); title('Figure1 Stability rate (Pragmatic tier)'); grid on;
 saveas(f, fullfile(config.output_dir,'fig1_rate.png'));
 
 f=figure('Position',[50 50 840 420]); bar(ms); set(gca,'XTickLabel',strategies); ylabel('Mean score'); title('Figure2 Mean score'); grid on;

@@ -127,4 +127,5 @@ This repository now includes `GFL_STABILITY_STUDY_v6.m`, an end-to-end benchmark
 1. Ensure Simulink model `GFL_LCL_WeakGrid_AI` is on MATLAB path.
 2. Run `GFL_STABILITY_STUDY_v6` in MATLAB.
 3. Outputs are saved under `results_v6/` (PNG figures + MAT file).
+4. Current practical bandwidth gate is `omega_PLL <= 0.5 * omega_CI` (adjustable in config).
 
