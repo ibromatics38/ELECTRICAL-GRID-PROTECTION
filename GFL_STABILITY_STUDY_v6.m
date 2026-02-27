@@ -74,7 +74,7 @@ fprintf('Dataset: %d SCR x %d R/X = %d cases (shared across methods)\n\n', ...
 %% ===================== PHASE 1: LABEL COMMON DATASET ====================
 nS = numel(config.SCR_list); nR = numel(config.RX_list);
 nCases = nS*nR;
-training_data = repmat(struct('SCR',NaN,'RX',NaN,'best_taus',NaN,'best_tspll',NaN,'best_score',-Inf,'has_stable',false), nCases,1);
+training_data = repmat(struct('SCR',NaN,'RX',NaN,'best_taus',NaN,'best_tspll',NaN,'best_score',-Inf,'best_penalty',Inf,'has_stable',false,'label_quality',0), nCases,1);
 
 k = 0;
 for i = 1:nS
@@ -84,12 +84,21 @@ for i = 1:nS
         params = get_base_params(config, SCR, RX);
 
         bestScore = -Inf; best_taus = NaN; best_tspll = NaN; stableCount = 0;
+        bestPenalty = Inf; best_penalty_taus = NaN; best_penalty_tspll = NaN;
         for taus = config.taus_sweep
             for tspll = config.tspll_sweep
                 if ~bandwidth_ok(taus, tspll, config.bw_separation), continue; end
                 [m, ok] = run_simulation(config, params, taus, tspll);
                 if ~ok, continue; end
                 [is_stable, score] = evaluate_stability_v6(m, config);
+
+                pen = compute_violation_index(m, config.criteria);
+                if pen < bestPenalty
+                    bestPenalty = pen;
+                    best_penalty_taus = taus;
+                    best_penalty_tspll = tspll;
+                end
+
                 if is_stable
                     stableCount = stableCount + 1;
                     if score > bestScore
@@ -101,24 +110,32 @@ for i = 1:nS
 
         training_data(k).SCR = SCR;
         training_data(k).RX = RX;
-        training_data(k).best_taus = best_taus;
-        training_data(k).best_tspll = best_tspll;
-        training_data(k).best_score = max(bestScore,0);
-        training_data(k).has_stable = ~isnan(best_taus);
+        training_data(k).best_penalty = bestPenalty;
 
-        if training_data(k).has_stable
+        if ~isnan(best_taus)
+            training_data(k).best_taus = best_taus;
+            training_data(k).best_tspll = best_tspll;
+            training_data(k).best_score = max(bestScore,0);
+            training_data(k).has_stable = true;
+            training_data(k).label_quality = 1;
             fprintf('[%3d/%d] SCR=%4.2f RX=%4.2f stable_cfg=%2d best=%.3f\n',k,nCases,SCR,RX,stableCount,bestScore);
         else
-            fprintf('[%3d/%d] SCR=%4.2f RX=%4.2f NO-STABLE-LABEL\n',k,nCases,SCR,RX);
+            % Fallback label keeps training set complete even when criteria are strict
+            training_data(k).best_taus = best_penalty_taus;
+            training_data(k).best_tspll = best_penalty_tspll;
+            training_data(k).best_score = 0;
+            training_data(k).has_stable = false;
+            training_data(k).label_quality = 0;
+            fprintf('[%3d/%d] SCR=%4.2f RX=%4.2f NO-STABLE-LABEL -> fallback penalty=%.3f\n',k,nCases,SCR,RX,bestPenalty);
         end
     end
 end
 
-idxTrain = find([training_data.has_stable]);
+idxTrain = find(~isnan([training_data.best_taus]) & ~isnan([training_data.best_tspll]));
 X_train = [[training_data(idxTrain).SCR]', [training_data(idxTrain).RX]'];
 Y_taus = [training_data(idxTrain).best_taus]';
 Y_tspll = [training_data(idxTrain).best_tspll]';
-fprintf('Trainable labeled cases: %d/%d\n', numel(idxTrain), nCases);
+fprintf('Trainable labeled cases: %d/%d (strict-stable labels: %d)\n', numel(idxTrain), nCases, sum([training_data.has_stable]));
 
 %% ====================== PHASE 2: FIT ALL METHODS ========================
 methods = fit_all_methods(X_train, Y_taus, Y_tspll);
@@ -212,9 +229,15 @@ SCR = X_train(:,1); RX = X_train(:,2);
 methods.baseline_taus = mean(Y_taus);
 methods.baseline_tspll = mean(Y_tspll);
 methods.linpll_taus = methods.baseline_taus;
-methods.linpll_coef = polyfit(1./SCR, Y_tspll, 1);
-methods.linboth_taus_coef = polyfit(1./SCR, Y_taus, 1);
-methods.linboth_tspll_coef = polyfit(1./SCR, Y_tspll, 1);
+if numel(SCR) >= 2
+    methods.linpll_coef = polyfit(1./SCR, Y_tspll, 1);
+    methods.linboth_taus_coef = polyfit(1./SCR, Y_taus, 1);
+    methods.linboth_tspll_coef = polyfit(1./SCR, Y_tspll, 1);
+else
+    methods.linpll_coef = [0, methods.baseline_tspll];
+    methods.linboth_taus_coef = [0, methods.baseline_taus];
+    methods.linboth_tspll_coef = [0, methods.baseline_tspll];
+end
 
 methods.SCR_zones = [0,1.5,3,6,Inf];
 methods.RX_zones = [0,0.3,1,Inf];
@@ -233,8 +256,13 @@ for i = 1:4
 end
 
 Xf = [X_train, log10(X_train(:,1)), log10(X_train(:,2)), X_train(:,1).*X_train(:,2)];
-methods.gpr_taus = fitrgp(Xf, Y_taus, 'KernelFunction','ardsquaredexponential','Standardize',true,'Sigma',1e-3);
-methods.gpr_tspll = fitrgp(Xf, Y_tspll, 'KernelFunction','ardsquaredexponential','Standardize',true,'Sigma',1e-3);
+if numel(Y_taus) >= 5
+    methods.gpr_taus = fitrgp(Xf, Y_taus, 'KernelFunction','ardsquaredexponential','Standardize',true,'Sigma',1e-3);
+    methods.gpr_tspll = fitrgp(Xf, Y_tspll, 'KernelFunction','ardsquaredexponential','Standardize',true,'Sigma',1e-3);
+else
+    methods.gpr_taus = [];
+    methods.gpr_tspll = [];
+end
 end
 
 function [taus, tspll] = get_method_params(methods, strategy, SCR, RX)
@@ -253,8 +281,13 @@ switch strategy
         taus = methods.lut_taus(iz,jz); tspll = methods.lut_tspll(iz,jz);
     case 'GPR_AI'
         Xt = [SCR,RX,log10(SCR),log10(RX),SCR*RX];
-        taus = predict(methods.gpr_taus, Xt);
-        tspll = predict(methods.gpr_tspll, Xt);
+        if ~isempty(methods.gpr_taus) && ~isempty(methods.gpr_tspll)
+            taus = predict(methods.gpr_taus, Xt);
+            tspll = predict(methods.gpr_tspll, Xt);
+        else
+            taus = methods.baseline_taus;
+            tspll = methods.baseline_tspll;
+        end
 end
 taus = max(0.3e-3,min(8e-3,taus));
 tspll = max(0.012,min(0.200,tspll));
@@ -380,6 +413,22 @@ function [is_stable, score, details] = fail_stub()
 is_stable = false; score = 0;
 details = struct('I_peak',NaN,'f_max_dev',NaN,'f_final_dev',NaN,'zeta',NaN,'T_settle',NaN,'rocof',NaN, ...
     'H1',false,'H2',false,'H3',false,'H4',false,'H5',false,'H6',false);
+end
+
+
+function pen = compute_violation_index(m, c)
+% Normalized violation index (0 = fully compliant, >0 = violated)
+if any(~isfinite([m.I_peak_pu, m.f_max_dev, m.f_final_dev, m.zeta, m.T_settle, m.rocof_max]))
+    pen = Inf;
+    return;
+end
+v1 = max(0, (m.I_peak_pu - c.I_peak_pu_max)/max(c.I_peak_pu_max,eps));
+v2 = max(0, (m.f_max_dev - c.f_dev_transient_Hz)/max(c.f_dev_transient_Hz,eps));
+v3 = max(0, (m.f_final_dev - c.f_dev_final_Hz)/max(c.f_dev_final_Hz,eps));
+v4 = max(0, (c.zeta_min - m.zeta)/max(c.zeta_min,eps));
+v5 = max(0, (m.T_settle - c.T_settle_max_s)/max(c.T_settle_max_s,eps));
+v6 = max(0, (m.rocof_max - c.rocof_max_Hzps)/max(c.rocof_max_Hzps,eps));
+pen = v1 + v2 + v3 + v4 + v5 + v6;
 end
 
 function summary = summarize_results(results, strategies)
