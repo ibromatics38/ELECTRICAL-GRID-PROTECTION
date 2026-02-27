@@ -52,6 +52,14 @@ config.criteria.acceptable_I_peak_pu_max = 1.25;
 config.criteria.acceptable_f_dev_transient_Hz = 2.00;
 config.criteria.use_scr_adaptive = true;
 
+% Pragmatic safety envelope + stability index settings
+config.criteria.safety_I_peak_pu_max = 1.35;
+config.criteria.safety_f_dev_transient_Hz = 2.50;
+config.criteria.safety_rocof_max_Hzps = 4.50;
+config.criteria.min_zeta_pragmatic = 0.005;
+config.criteria.decay_ratio_max = 1.05;
+config.criteria.psi_min = 0.55;
+
 % Soft weights (sum to 1)
 config.weights = struct('current',0.20,'frequency',0.25,'finalBias',0.15,'damping',0.20,'settling',0.10,'rocof',0.10);
 
@@ -81,6 +89,9 @@ fprintf('║   ACCEPTABLE (compromise) criteria                               �
 fprintf('║     H1a: I_peak ≤ %.2f p.u., H2a: |Δf_trans| ≤ %.1f Hz           ║\n', config.criteria.acceptable_I_peak_pu_max, config.criteria.acceptable_f_dev_transient_Hz);
 fprintf('║     H3a: |Δf_final| ≤ %.2f Hz, H5a: T_settle ≤ %.1f s            ║\n', config.criteria.acceptable_f_dev_final_Hz, config.criteria.acceptable_T_settle_max_s);
 fprintf('║     H6a: RoCoF ≤ %.1f Hz/s (SCR-adaptive=%d)                     ║\n', config.criteria.acceptable_rocof_max_Hzps, config.criteria.use_scr_adaptive);
+fprintf('║   PRAGMATIC SAFETY ENVELOPE                                       ║\n');
+fprintf('║     I≤%.2f pu, |Δf_trans|≤%.1f Hz, RoCoF≤%.1f Hz/s                ║\n', config.criteria.safety_I_peak_pu_max, config.criteria.safety_f_dev_transient_Hz, config.criteria.safety_rocof_max_Hzps);
+fprintf('║     dynamic: (ζ≥%.3f OR decay ratio≤%.2f), PSI≥%.2f               ║\n', config.criteria.min_zeta_pragmatic, config.criteria.decay_ratio_max, config.criteria.psi_min);
 fprintf('╚═══════════════════════════════════════════════════════════════════╝\n');
 fprintf('Dataset: %d SCR x %d R/X = %d cases (shared across methods)\n\n', ...
     numel(config.SCR_list), numel(config.RX_list), numel(config.SCR_list)*numel(config.RX_list));
@@ -118,7 +129,7 @@ for i = 1:nS
                     best_penalty_tspll = tspll;
                 end
 
-                if details.is_acceptable
+                if details.is_pragmatic
                     stableCount = stableCount + 1;
                     if score > bestScore
                         bestScore = score; best_taus = taus; best_tspll = tspll;
@@ -313,7 +324,7 @@ tspll = max(0.012,min(0.200,tspll));
 end
 
 function [metrics, success] = run_simulation(config, params, taus, tspll)
-metrics = struct('I_peak_pu',NaN,'f_max_dev',NaN,'f_final_dev',NaN,'zeta',NaN,'T_settle',NaN,'rocof_max',NaN);
+metrics = struct('I_peak_pu',NaN,'f_max_dev',NaN,'f_final_dev',NaN,'zeta',NaN,'T_settle',NaN,'rocof_max',NaN,'decay_ratio',NaN,'psi',0);
 success = false;
 try
     xi = 0.707;
@@ -349,7 +360,7 @@ try
     idx_final = t >= (params.T_end-0.1);
     metrics.f_final_dev = abs(mean(f(idx_final)) - 50);
 
-    [metrics.zeta, metrics.T_settle] = robust_damping_settling(t2, f2, 50);
+    [metrics.zeta, metrics.T_settle, metrics.decay_ratio] = robust_damping_settling(t2, f2, 50);
 
     dt = median(diff(t2));
     if dt > 0
@@ -358,6 +369,14 @@ try
     else
         metrics.rocof_max = Inf;
     end
+
+    % Pragmatic stability index PSI in [0,1]: normalized safety+quality blend
+    mI = max(0, min(1, 1 - (metrics.I_peak_pu - 1) / max(config.criteria.safety_I_peak_pu_max - 1, eps)));
+    mFtr = max(0, min(1, 1 - metrics.f_max_dev / max(config.criteria.safety_f_dev_transient_Hz, eps)));
+    mFfin = max(0, min(1, 1 - metrics.f_final_dev / max(config.criteria.acceptable_f_dev_final_Hz, eps)));
+    mR = max(0, min(1, 1 - metrics.rocof_max / max(config.criteria.safety_rocof_max_Hzps, eps)));
+    mDyn = max(0, min(1, 1 - max(0, metrics.decay_ratio - 1) / max(config.criteria.decay_ratio_max - 1, eps)));
+    metrics.psi = 0.22*mI + 0.22*mFtr + 0.18*mFfin + 0.18*mR + 0.20*mDyn;
 
     success = true;
 catch
@@ -374,10 +393,10 @@ if size(is_abc,2) ~= 3, is_abc = squeeze(is_abc); end
 if size(is_abc,2) ~= 3 && size(is_abc,1)==3, is_abc = is_abc'; end
 end
 
-function [zeta, T_settle] = robust_damping_settling(t, sig, target)
+function [zeta, T_settle, decay_ratio] = robust_damping_settling(t, sig, target)
 err = sig(:)-target;
 if numel(err) < 20
-    zeta = 0; T_settle = Inf; return;
+    zeta = 0; T_settle = Inf; decay_ratio = Inf; return;
 end
 
 % settling in ±2%
@@ -386,6 +405,12 @@ lastOut = find(abs(err)>tol,1,'last');
 if isempty(lastOut), T_settle = 0; else, T_settle = t(lastOut)-t(1); end
 
 [pks,~] = findpeaks(abs(err));
+if numel(pks) >= 2 && pks(1) > 0
+    decay_ratio = pks(end)/pks(1);
+else
+    decay_ratio = std(err(max(1,floor(2*end/3)):end)) / max(std(err(1:max(5,floor(end/3)))), eps);
+end
+
 if numel(pks)>=2 && pks(end)>0
     delta = log(max(pks(1),eps)/max(pks(end),eps))/max(numel(pks)-1,1);
     zeta = delta/sqrt(4*pi^2 + delta^2);
@@ -406,6 +431,8 @@ details.f_final_dev = m.f_final_dev;
 details.zeta = m.zeta;
 details.T_settle = m.T_settle;
 details.rocof = m.rocof_max;
+details.decay_ratio = m.decay_ratio;
+details.PSI = m.psi;
 
 details.H1 = m.I_peak_pu <= c.I_peak_pu_max;
 details.H2 = m.f_max_dev <= c.f_dev_transient_Hz;
@@ -413,6 +440,13 @@ details.H3 = m.f_final_dev <= c.f_dev_final_Hz;
 details.H4 = m.zeta >= c.zeta_min;
 details.H5 = m.T_settle <= c.T_settle_max_s;
 details.H6 = m.rocof_max <= c.rocof_max_Hzps;
+
+% Safety-envelope gates
+details.HS1 = m.I_peak_pu <= c.safety_I_peak_pu_max;
+details.HS2 = m.f_max_dev <= c.safety_f_dev_transient_Hz;
+details.HS3 = m.rocof_max <= c.safety_rocof_max_Hzps;
+details.HS4 = (m.zeta >= c.min_zeta_pragmatic) || (m.decay_ratio <= c.decay_ratio_max);
+details.HS5 = m.psi >= c.psi_min;
 
 % Acceptable/compromise checks for practical weak-grid operation.
 [Iacc, FtrAcc, FfinAcc, TsetAcc, RocofAcc] = get_adaptive_acceptable_limits(c, SCR);
@@ -429,10 +463,11 @@ details.H6a = m.rocof_max <= RocofAcc;
 
 details.is_strict = details.H1 && details.H2 && details.H3 && details.H4 && details.H5 && details.H6;
 details.is_acceptable = details.H4 && details.H1a && details.H2a && details.H3a && details.H5a && details.H6a;
+details.is_pragmatic = details.HS1 && details.HS2 && details.HS3 && details.HS4 && details.HS5;
 
-% Final decision uses acceptable tier, strict tier retained for reporting.
-is_stable = details.is_acceptable;
-if ~details.is_acceptable
+% Final decision uses pragmatic tier; strict/acceptable retained for reporting.
+is_stable = details.is_pragmatic;
+if ~details.is_pragmatic
     score = 0; return;
 end
 
@@ -445,19 +480,23 @@ S5 = max(0, min(1, 1 - m.T_settle/c.T_settle_max_s));
 S6 = max(0, min(1, 1 - m.rocof_max/c.rocof_max_Hzps));
 score = w.current*S1 + w.frequency*S2 + w.finalBias*S3 + w.damping*S4 + w.settling*S5 + w.rocof*S6;
 
-% Slight penalty when only acceptable tier passes (not strict tier).
-if ~details.is_strict
-    score = 0.85 * score;
+% Penalties for non-strict/non-acceptable operation
+if ~details.is_acceptable
+    score = 0.80 * score;
+elseif ~details.is_strict
+    score = 0.90 * score;
 end
 end
 
 function [is_stable, score, details] = fail_stub()
 is_stable = false; score = 0;
 details = struct('I_peak',NaN,'f_max_dev',NaN,'f_final_dev',NaN,'zeta',NaN,'T_settle',NaN,'rocof',NaN, ...
+    'decay_ratio',NaN,'PSI',0, ...
     'H1',false,'H2',false,'H3',false,'H4',false,'H5',false,'H6',false, ...
+    'HS1',false,'HS2',false,'HS3',false,'HS4',false,'HS5',false, ...
     'H1a',false,'H2a',false,'H3a',false,'H5a',false,'H6a',false, ...
     'Iacc_limit',NaN,'FtrAcc_limit',NaN,'FfinAcc_limit',NaN,'TsetAcc_limit',NaN,'RocofAcc_limit',NaN, ...
-    'is_strict',false,'is_acceptable',false);
+    'is_strict',false,'is_acceptable',false,'is_pragmatic',false);
 end
 
 function [Iacc, FtrAcc, FfinAcc, TsetAcc, RocofAcc] = get_adaptive_acceptable_limits(c, SCR)
@@ -496,22 +535,29 @@ for s = 1:numel(strategies)
     st = strategies{s};
     stable = [results.(['stable_' st])];
     strict = [results.(['is_strict_' st])];
+    acceptable = [results.(['is_acceptable_' st])];
+    pragmatic = [results.(['is_pragmatic_' st])];
     sc = [results.(['score_' st])];
     summary.(st).n_stable = sum(stable);
     summary.(st).rate = 100*mean(stable);
     summary.(st).n_strict = sum(strict);
     summary.(st).strict_rate = 100*mean(strict);
+    summary.(st).n_acceptable = sum(acceptable);
+    summary.(st).acceptable_rate = 100*mean(acceptable);
+    summary.(st).n_pragmatic = sum(pragmatic);
+    summary.(st).pragmatic_rate = 100*mean(pragmatic);
     summary.(st).mean_score = mean(sc(stable)); if isnan(summary.(st).mean_score), summary.(st).mean_score = 0; end
 end
 end
 
 function print_summary(summary, nCases)
-fprintf('\n%-12s %10s %10s %10s %10s %12s\n','Strategy','Accept','Acc(%)','Strict','Str(%)','MeanScore');
+fprintf('\n%-12s %10s %10s %10s %10s %10s %10s %12s\n','Strategy','Prag','Prag(%)','Accept','Acc(%)','Strict','Str(%)','MeanScore');
 fields = fieldnames(summary);
 for i = 1:numel(fields)
     st = fields{i};
-    fprintf('%-12s %5d/%-4d %9.1f %5d/%-4d %9.1f %12.3f\n', st, ...
-        summary.(st).n_stable, nCases, summary.(st).rate, ...
+    fprintf('%-12s %5d/%-4d %9.1f %5d/%-4d %9.1f %5d/%-4d %9.1f %12.3f\n', st, ...
+        summary.(st).n_pragmatic, nCases, summary.(st).pragmatic_rate, ...
+        summary.(st).n_acceptable, nCases, summary.(st).acceptable_rate, ...
         summary.(st).n_strict, nCases, summary.(st).strict_rate, summary.(st).mean_score);
 end
 end
@@ -565,12 +611,29 @@ end
 bar(F'); legend({'H1','H2','H3','H4','H5','H6'}); set(gca,'XTickLabel',strategies); title('Figure5 criteria failures'); grid on;
 saveas(f, fullfile(config.output_dir,'fig5_failures.png'));
 
+f=figure('Position',[50 50 1000 420]); Fs=zeros(5,nS);
+for s=1:nS
+    st=strategies{s};
+    for h=1:5
+        Fs(h,s)=sum(~[results.(['HS' num2str(h) '_' st])]);
+    end
+end
+bar(Fs'); legend({'HS1','HS2','HS3','HS4','HS5'}); set(gca,'XTickLabel',strategies); title('Figure5b pragmatic safety-envelope failures'); grid on;
+saveas(f, fullfile(config.output_dir,'fig5b_pragmatic_failures.png'));
+
 f=figure('Position',[50 50 900 420]); hold on;
 for s=1:nS
     st=strategies{s}; r=[results.(['rocof_' st])]; boxchart(s*ones(size(r)), r);
 end
 set(gca,'XTick',1:nS,'XTickLabel',strategies); ylabel('RoCoF (Hz/s)'); title('Figure6 RoCoF distribution'); grid on;
 saveas(f, fullfile(config.output_dir,'fig6_rocof_box.png'));
+
+f=figure('Position',[50 50 900 420]); hold on;
+for s=1:nS
+    st=strategies{s}; p=[results.(['PSI_' st])]; boxchart(s*ones(size(p)), p);
+end
+set(gca,'XTick',1:nS,'XTickLabel',strategies); ylabel('PSI (0-1)'); title('Figure6b Pragmatic Stability Index distribution'); grid on;
+saveas(f, fullfile(config.output_dir,'fig6b_psi_box.png'));
 
 f=figure('Position',[50 50 900 420]); hold on;
 for s=1:nS
