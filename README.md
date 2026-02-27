@@ -115,7 +115,9 @@ This repository now includes `GFL_STABILITY_STUDY_v6.m`, an end-to-end benchmark
 ### What is improved
 - A single shared dataset (`SCR_list × RX_list`) is used to train and evaluate all methods.
 - Stability is assessed with explicit hard criteria `H1..H6` (including corrected final-frequency and RoCoF limit).
-- Extended analytics generate 10 figures (rates, heatmaps, failure breakdown, RoCoF boxplot, damping CDF, parameter surfaces, Pareto plot).
+- Extended analytics generate 10 benchmark figures (rates, heatmaps, failure breakdown, RoCoF boxplot, damping CDF, parameter surfaces, Pareto plot).
+- Added 4 additional **small-signal proxy** figures (damping maps, margin distribution, settling-vs-damping, weak-grid sensitivity).
+- Important: proxy small-signal plots are data-driven from time-domain responses; full eigenvalue/impedance linearization remains optional and model-dependent.
 
 ### Run
 1. Ensure Simulink model `GFL_LCL_WeakGrid_AI` is on MATLAB path.

@@ -45,6 +45,11 @@ config.criteria.rocof_max_Hzps     = 2.00;  % H6
 % Soft weights (sum to 1)
 config.weights = struct('current',0.20,'frequency',0.25,'finalBias',0.15,'damping',0.20,'settling',0.10,'rocof',0.10);
 
+% Small-signal analysis options
+config.small_signal.enable = true;
+config.small_signal.use_linearization = false; % set true if linearize() model workflow is available
+config.small_signal.report_top_n = 3;
+
 fprintf('\n=== GFL Stability Benchmark v6 ===\n');
 fprintf('Dataset: %d SCR x %d R/X = %d cases (shared across methods)\n', ...
     numel(config.SCR_list), numel(config.RX_list), numel(config.SCR_list)*numel(config.RX_list));
@@ -142,6 +147,9 @@ print_summary(summary, nCases);
 
 %% ======================= PHASE 4: MANY FIGURES ==========================
 generate_figures_v6(results, summary, strategies, config, methods);
+if config.small_signal.enable
+    generate_small_signal_figures_v6(results, strategies, config);
+end
 
 timestamp = datestr(now, 'yyyymmdd_HHMMSS');
 outMat = fullfile(config.output_dir, sprintf('GFL_study_v6_%s.mat', timestamp));
@@ -446,4 +454,84 @@ for s=1:nS
 end
 xlabel('max |Δf| (Hz)'); ylabel('I_peak (p.u.)'); title('Figure10 Pareto: frequency deviation vs current peak'); grid on; legend('Location','best');
 saveas(f, fullfile(config.output_dir,'fig10_pareto.png'));
+end
+
+
+function generate_small_signal_figures_v6(results, strategies, config)
+% Proxy small-signal assessment from disturbance ring-down metrics
+% NOTE: This is a data-driven proxy (zeta, settling, RoCoF, final bias) and
+% not a full eigenvalue/impedance linearization workflow.
+
+nS = numel(strategies);
+SCR = config.SCR_list; RX = config.RX_list; nCases = numel(results);
+
+% Figure SS1: zeta heatmaps for each strategy
+f=figure('Position',[30 30 1600 300]);
+for s=1:nS
+    st=strategies{s}; Z=zeros(numel(RX),numel(SCR));
+    for k=1:nCases
+        is = find(SCR==results(k).SCR,1); ir = find(abs(RX-results(k).RX)<1e-9,1);
+        Z(ir,is)=results(k).(['zeta_' st]);
+    end
+    subplot(1,nS,s); imagesc(SCR,RX,Z); set(gca,'YDir','normal'); colorbar;
+    caxis([-0.05 0.35]); xlabel('SCR'); if s==1, ylabel('R/X'); end
+    title([st ' zeta map']);
+end
+sgtitle('SS1: Damping-ratio maps (proxy small-signal)');
+saveas(f, fullfile(config.output_dir,'ss1_zeta_maps.png'));
+
+% Figure SS2: margin index boxplot
+% margin > 0 indicates all hard criteria passed with average normalized headroom
+f=figure('Position',[50 50 900 420]); hold on;
+for s=1:nS
+    st=strategies{s};
+    M = compute_margin_vector(results, st, config);
+    boxchart(s*ones(size(M)), M);
+end
+set(gca,'XTick',1:nS,'XTickLabel',strategies); ylabel('Margin index');
+title('SS2: Composite stability-margin distribution'); grid on;
+saveas(f, fullfile(config.output_dir,'ss2_margin_box.png'));
+
+% Figure SS3: settling-vs-damping scatter
+f=figure('Position',[50 50 900 420]); hold on;
+for s=1:nS
+    st=strategies{s};
+    z=[results.(['zeta_' st])]; ts=[results.(['T_settle_' st])];
+    scatter(z, ts, 18, 'filled', 'MarkerFaceAlpha',0.45, 'DisplayName', st);
+end
+xlabel('zeta'); ylabel('T_{settle} (s)'); title('SS3: Settling time vs damping');
+legend('Location','best'); grid on;
+saveas(f, fullfile(config.output_dir,'ss3_settling_vs_zeta.png'));
+
+% Figure SS4: weak-grid sensitivity (SCR<=1.5)
+weak = [results.SCR] <= 1.5;
+f=figure('Position',[50 50 900 420]); vals=zeros(sum(weak),nS);
+for s=1:nS
+    st=strategies{s};
+    vals(:,s) = [results(weak).(['rocof_' st])]';
+end
+bar(mean(vals,1));
+set(gca,'XTick',1:nS,'XTickLabel',strategies); ylabel('Mean RoCoF in weak grid (Hz/s)');
+title('SS4: Weak-grid dynamic sensitivity'); grid on;
+saveas(f, fullfile(config.output_dir,'ss4_weakgrid_rocof.png'));
+
+fprintf('Generated 4 additional small-signal proxy figures (SS1-SS4)\n');
+end
+
+function M = compute_margin_vector(results, st, config)
+c = config.criteria;
+I = [results.(['I_peak_' st])];
+Fmax = [results.(['f_max_dev_' st])];
+Ffin = [results.(['f_final_dev_' st])];
+Z = [results.(['zeta_' st])];
+Ts = [results.(['T_settle_' st])];
+R = [results.(['rocof_' st])];
+
+m1 = 1 - (I./c.I_peak_pu_max);
+m2 = 1 - (Fmax./c.f_dev_transient_Hz);
+m3 = 1 - (Ffin./c.f_dev_final_Hz);
+m4 = (Z - c.zeta_min)./max(c.zeta_min,eps);
+m5 = 1 - (Ts./c.T_settle_max_s);
+m6 = 1 - (R./c.rocof_max_Hzps);
+M = mean([m1(:),m2(:),m3(:),m4(:),m5(:),m6(:)],2,'omitnan');
 end
