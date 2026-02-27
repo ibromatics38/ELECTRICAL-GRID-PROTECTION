@@ -1,0 +1,265 @@
+{\rtf1\ansi\deff0
+\b Textbook-Style Report: GFL Inverter Stability Benchmark and GPR-Based Tuning\b0\par
+\par
+\b 1. Introduction\b0\par
+This report explains the complete implementation in `GFL_STABILITY_STUDY_REFACTORED.m`, which was designed to benchmark multiple controller tuning strategies for a grid-following (GFL) inverter under weak-grid conditions.\par
+\par
+The implementation has one principal goal: **fair, physically meaningful, and reproducible comparison** of tuning policies (Baseline, linear heuristics, lookup table, and Gaussian Process Regression) on exactly the same operating points.\par
+\par
+\par
+\par
+\b 2. Problem Statement and Design Objectives\b0\par
+The script addresses four practical research requirements:\par
+\par
+1. **Equal dataset across all methods**  \par
+   All strategies are evaluated on a shared `(SCR, R/X)` dataset.\par
+2. **Physically interpretable stability definition**  \par
+   Hard pass/fail constraints are separated from soft quality scoring.\par
+3. **Data-driven optimization with safety constraints**  \par
+   GPR predicts tuning parameters but remains bounded and bandwidth-feasible.\par
+4. **Simulink-centric reproducibility**  \par
+   The full workflow is executable from one script and writes reproducible outputs.\par
+\par
+\par
+\par
+\b 3. Overall Pipeline Architecture\b0\par
+The script executes six conceptual stages:\par
+\par
+1. Build a shared operating dataset from all SCR and R/X combinations.\par
+2. Sweep candidate controller knobs (`taus`, `tspll`) on each operating point.\par
+3. Compute stability score for each candidate by hard + soft criteria.\par
+4. Select the best stable candidate per operating point and train GPR models.\par
+5. Evaluate all strategies on the same dataset.\par
+6. Summarize and persist training, benchmark, and aggregate outputs.\par
+\par
+This flow is intentionally unidirectional (dataset -> training -> modeling -> evaluation) to avoid leakage or hidden retuning during comparison.\par
+\par
+\par
+\par
+\b 4. Configuration and Shared Dataset\b0\par
+The implementation defines:\par
+\par
+• model name and disturbance settings (`DipPct`, `T_stp`, `SimTime`),\par
+• SCR grid and R/X grid,\par
+• controller sweep ranges,\par
+• hard criteria thresholds,\par
+• soft score weights,\par
+• strategy list.\par
+\par
+\i 4.1 Why shared dataset matters\i0\par
+Benchmark fairness requires each strategy to face **the same difficulty distribution**. If strategy A is tested on easier points (e.g., larger SCR) and strategy B on harder points, reported gains are not meaningful.\par
+\par
+The script enforces identical cases using a cartesian product table:\par
+\par
+\\[\par
+\\mathcal\{D\} = \\\{(\\text\{SCR\}_i, (R/X)_j)\\\}_\{i=1..N_\{SCR\},\\, j=1..N_\{RX\}\}\par
+\\]\par
+\par
+with `15 x 7 = 105` operating points.\par
+\par
+\par
+\par
+\b 5. Controller Knobs and Physical Bandwidth Constraint\b0\par
+Two key tuning knobs are used:\par
+\par
+• `taus`: current controller time constant,\par
+• `tspll`: PLL settling-related time constant.\par
+\par
+A bandwidth separation rule is enforced:\par
+\par
+\\[\par
+\\omega_\{PLL\} \\le \\alpha\\,\\omega_\{CI\}\par
+\\]\par
+\par
+where\par
+\par
+\\[\par
+\\omega_\{CI\}=\\frac\{1\}\{\\tau_s\}, \\quad \\omega_\{PLL\}=\\frac\{4\}\{0.707\\,t_\{s,PLL\}\}\par
+\\]\par
+\par
+and `alpha_bw = 0.20` by default.\par
+\par
+\i Why this is physically important\i0\par
+In weak grids, an overly fast PLL can couple destabilizingly with current dynamics. Forcing PLL bandwidth lower than current-loop bandwidth is a classical decoupling heuristic that increases robustness.\par
+\par
+\par
+\par
+\b 6. Training Data Generation Logic\b0\par
+For each `(SCR, R/X)` case:\par
+\par
+1. Iterate all feasible `(taus, tspll)` sweep pairs.\par
+2. Apply grid and gains to parameter struct.\par
+3. Simulate in Simulink.\par
+4. Evaluate stability + quality score.\par
+5. Record one row in `training_table`.\par
+6. Keep the **best-scoring** feasible point as `best_knobs` for that case.\par
+\par
+This produces:\par
+\par
+• a dense training table of candidate outcomes,\par
+• one optimal (or least-bad fallback) tuning per operating point.\par
+\par
+\par
+\par
+\b 7. Gaussian Process Regression (GPR) Layer\b0\par
+The script trains two independent regressors:\par
+\par
+• `GPR_taus : X -> taus`\par
+• `GPR_tspll : X -> tspll`\par
+\par
+with feature map\par
+\par
+\\[\par
+X_f = [SCR, R/X, \\log_\{10\}(SCR), \\log_\{10\}(\\max(R/X, 0.01)), SCR\\cdot R/X]\par
+\\]\par
+\par
+and ARD squared-exponential kernels.\par
+\par
+\i Why this feature map\i0\par
+• raw terms represent first-order behavior,\par
+• logs better linearize sensitivity near weak-grid region,\par
+• interaction term captures cross-coupling (`SCR * R/X`).\par
+\par
+\i Fallback philosophy\i0\par
+If stable samples are too few, models are left empty and runtime falls back to baseline constants. This avoids pretending to have learned from insufficient data.\par
+\par
+\par
+\par
+\b 8. Strategy Evaluation Protocol\b0\par
+Each strategy generates `(taus, tspll)` for every case:\par
+\par
+• Baseline: fixed constants,\par
+• LinearPLL: SCR-based PLL interpolation,\par
+• LinearBoth: SCR-based interpolation for both knobs,\par
+• LookupTable: discrete region map in `(SCR, R/X)`,\par
+• GPR_AI: model prediction then safety clipping.\par
+\par
+After generation, all tunings are clipped to valid bounds and re-checked against bandwidth feasibility.\par
+\par
+\i Critical fairness feature\i0\par
+All strategies call the same simulator and the same `stability_assessment` function, so differences in outcomes are attributable to tuning policy rather than evaluation method.\par
+\par
+\par
+\par
+\b 9. Stability Criteria Framework\b0\par
+The implementation separates **hard criteria** (binary admissibility) from **soft criteria** (quality ranking among admissible cases).\par
+\par
+\b 9.1 Hard Criteria (must all pass)\b0\par
+• H1 Current limit: `I_peak_pu <= 1.15`\par
+• H2 Transient frequency bound: `max|f-50| <= 1.0 Hz`\par
+• H3 Final frequency recovery: `|f_final-50| <= 0.05 Hz`\par
+• H4 Damping floor: `zeta >= 0.02`\par
+• H5 Settling speed: `T_settle <= 2.0 s`\par
+\par
+Overall stability is\par
+\par
+\\[\par
+\\text\{Stable\} = H1 \\land H2 \\land H3 \\land H4 \\land H5\par
+\\]\par
+\par
+\b 9.2 Soft Criteria (only computed when hard pass)\b0\par
+• S1 current quality,\par
+• S2 frequency quality,\par
+• S3 damping margin quality,\par
+• S4 settling quality.\par
+\par
+Weighted score:\par
+\par
+\\[\par
+Score = w_1 S1 + w_2 S2 + w_3 S3 + w_4 S4\par
+\\]\par
+\par
+with default weights `[0.25, 0.30, 0.25, 0.20]`.\par
+\par
+\i Why hard + soft is better than one monolithic scalar\i0\par
+A single scalar alone may hide standards violations. Hard gates enforce compliance first; soft scores then rank performance among compliant cases.\par
+\par
+\par
+\par
+\b 10. Signal Processing and Metric Extraction\b0\par
+The stability evaluator uses `logsout` signals:\par
+\par
+• `is_abc_n1` for current RMS envelope,\par
+• `omega` for frequency,\par
+• optional `vdq` compatibility pattern retained.\par
+\par
+A post-disturbance window starts at `T_stp + 20 ms` to skip immediate switching artifacts.\par
+\par
+\i 10.1 Current metrics\i0\par
+• Compute RMS from three-phase current.\par
+• Smooth by moving average over roughly two cycles.\par
+• Extract `I_peak`, `I_final`, `I_ratio`, and H1.\par
+\par
+\i 10.2 Frequency metrics\i0\par
+• Convert `omega` to Hz.\par
+• Evaluate max deviation and final deviation for H2/H3.\par
+\par
+\i 10.3 Damping estimate\i0\par
+A conservative estimate is used:\par
+\par
+1. logarithmic decrement on peaks (when available),\par
+2. amplitude decay between first/second half windows,\par
+3. choose the more conservative (smaller) positive damping estimate.\par
+\par
+This prevents over-optimistic damping claims when oscillation evidence is mixed.\par
+\par
+\i 10.4 Settling time\i0\par
+Settling is defined as the first time after which smoothed current remains within ±5% of final value.\par
+\par
+\par
+\par
+\b 11. Data Structures and Output Artifacts\b0\par
+The implementation relies on preallocated tables to improve reliability and traceability:\par
+\par
+• `training_table`: per-candidate sweep outcomes,\par
+• `results`: per-case per-strategy benchmark outputs,\par
+• `summary`: strategy-level aggregate statistics.\par
+\par
+Files written to `results_refactored/`:\par
+\par
+• `training_<timestamp>.csv`\par
+• `results_<timestamp>.csv`\par
+• `summary_<timestamp>.csv`\par
+• `study_<timestamp>.mat`\par
+\par
+This enables reproducible post-processing without rerunning all simulations.\par
+\par
+\par
+\par
+\b 12. Critical Review: Strengths and Remaining Gaps\b0\par
+\b 12.1 Strengths\b0\par
+• Fair dataset governance across strategies.\par
+• Physically informed hard criteria and PLL/current bandwidth separation.\par
+• Conservative damping treatment.\par
+• Robust fallbacks when learning data are sparse.\par
+• Single-script reproducible workflow.\par
+\par
+\b 12.2 Remaining gaps (for publication-grade rigor)\b0\par
+1. **Damping proxy limitation**: current-envelope damping is indirect; a small-signal eigenvalue damping ratio would be stronger evidence.\par
+2. **Single disturbance type**: only one dip profile is currently embedded; include depth/duration diversity for stronger claims.\par
+3. **No uncertainty bands in final report**: GPR predictive uncertainty could be propagated into confidence intervals.\par
+4. **Signal-name coupling**: strict dependence on `logsout` naming; a signal adapter layer would improve portability.\par
+\par
+\par
+\par
+\b 13. Recommended Next Enhancements\b0\par
+1. Add `criteria_profile` presets (strict/standard/exploratory).\par
+2. Add k-fold or leave-one-SCR-out validation for GPR generalization.\par
+3. Add Monte Carlo over measurement noise and parameter mismatch.\par
+4. Add eigenvalue-based damping cross-check block for selected points.\par
+5. Add automatic report generation plotting Pareto fronts: stability rate vs mean score.\par
+\par
+\par
+\par
+\b 14. How to Use in Practice\b0\par
+1. Open MATLAB/Simulink environment with model `GFL_LCL_WeakGrid_AI` available.\par
+2. Ensure `logsout` contains `is_abc_n1` and `omega`.\par
+3. Run `GFL_STABILITY_STUDY_REFACTORED.m`.\par
+4. Inspect CSV/MAT artifacts in `results_refactored/`.\par
+5. Compare strategy outcomes in `summary_*.csv` and inspect failure regions in `results_*.csv`.\par
+\par
+\par
+\par
+\b 15. Conclusion\b0\par
+The refactored implementation establishes a strong benchmark foundation: equal-case testing, explicit physical stability gates, and safe data-driven tuning. It is appropriate for systematic engineering comparison and can be extended to publication-grade evidence by adding eigenvalue-level damping validation and uncertainty quantification.\par
+}

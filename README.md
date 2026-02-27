@@ -89,6 +89,24 @@ This repository contains comprehensive test reports and analyses for three criti
 
 ---
 
+
+## GFL Inverter Stability Study (Simulink + GPR)
+Textbook-style implementation report: `TEXTBOOK_REPORT_GFL_STABILITY.md`.
+
+A refactored MATLAB script is included as `GFL_STABILITY_STUDY_REFACTORED.m` to support your grid-following inverter tuning workflow.
+
+Highlights:
+- MATLAB runnable script copy: `GFL_STABILITY_STUDY_COMPLETE.m`
+- Word-compatible report: `GFL_STABILITY_REPORT.doc`
+- Uses one shared `(SCR, R/X)` dataset for all methods (baseline, lookup, linear, GPR).
+- Implements hard stability criteria and weighted soft scoring in one consistent function.
+- Adds bandwidth-feasibility enforcement between PLL and current loop.
+- Saves training, benchmark, and summary tables to `results_refactored/`.
+
+This script is designed to run with your Simulink model (`GFL_LCL_WeakGrid_AI`) and logged signals (`is_abc_n1`, `omega`).
+
+---
+
 ## How to Use
 1. **Review Reports**: Open PDFs for detailed test methodologies, graphs, and results.  
 2. **Replicate Tests**: Use OMICRON test modules (Diff Configuration, Advanced Distance, Ramping) with the settings described.  
