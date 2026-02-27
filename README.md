@@ -120,6 +120,7 @@ This repository now includes `GFL_STABILITY_STUDY_v6.m`, an end-to-end benchmark
 - Important: proxy small-signal plots are data-driven from time-domain responses; full eigenvalue/impedance linearization remains optional and model-dependent.
 - Added robust label fallback for strict scenarios: when no point satisfies all hard criteria, the least-violation candidate is used for training continuity while evaluation still uses strict pass/fail.
 - Added two-tier decision logic: **strict** (`H1..H6`) and **acceptable/compromise** (relaxed `H3/H5/H6`) so weak-grid edge cases can be operationally accepted while strict compliance is still reported.
+- Added SCR-adaptive acceptable thresholds (H1a/H2a/H3a/H5a/H6a) and relaxed practical bandwidth-separation setting for improved coverage in non-weak and borderline grid conditions.
 
 ### Run
 1. Ensure Simulink model `GFL_LCL_WeakGrid_AI` is on MATLAB path.

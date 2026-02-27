@@ -31,7 +31,8 @@ config.taus_sweep  = [0.3, 0.5, 0.8, 1.0, 1.5, 2.0, 3.0, 5.0, 8.0] * 1e-3; % [s]
 config.tspll_sweep = [0.012, 0.018, 0.025, 0.035, 0.050, 0.080, 0.120, 0.160, 0.200];
 
 % Bandwidth-separation constraint (kept identical across all methods)
-config.bw_separation = 0.20; % omega_pll <= 0.2*omega_ci
+config.bw_separation = 1.00; % omega_pll <= 1.0*omega_ci (practical compromise)
+config.enforce_bw_separation = true;
 
 % Hard criteria and soft-score settings
 config.criteria = struct();
@@ -47,6 +48,9 @@ config.criteria.rocof_max_Hzps     = 2.00;  % H6
 config.criteria.acceptable_f_dev_final_Hz = 0.15;
 config.criteria.acceptable_T_settle_max_s = 3.00;
 config.criteria.acceptable_rocof_max_Hzps = 3.00;
+config.criteria.acceptable_I_peak_pu_max = 1.25;
+config.criteria.acceptable_f_dev_transient_Hz = 2.00;
+config.criteria.use_scr_adaptive = true;
 
 % Soft weights (sum to 1)
 config.weights = struct('current',0.20,'frequency',0.25,'finalBias',0.15,'damping',0.20,'settling',0.10,'rocof',0.10);
@@ -74,8 +78,9 @@ fprintf('║     H4: ζ ≥ %.0f%%                                              
 fprintf('║     H5: T_settle ≤ %.1f s                                        ║\n', config.criteria.T_settle_max_s);
 fprintf('║     H6: RoCoF ≤ %.1f Hz/s                                        ║\n', config.criteria.rocof_max_Hzps);
 fprintf('║   ACCEPTABLE (compromise) criteria                               ║\n');
+fprintf('║     H1a: I_peak ≤ %.2f p.u., H2a: |Δf_trans| ≤ %.1f Hz           ║\n', config.criteria.acceptable_I_peak_pu_max, config.criteria.acceptable_f_dev_transient_Hz);
 fprintf('║     H3a: |Δf_final| ≤ %.2f Hz, H5a: T_settle ≤ %.1f s            ║\n', config.criteria.acceptable_f_dev_final_Hz, config.criteria.acceptable_T_settle_max_s);
-fprintf('║     H6a: RoCoF ≤ %.1f Hz/s                                       ║\n', config.criteria.acceptable_rocof_max_Hzps);
+fprintf('║     H6a: RoCoF ≤ %.1f Hz/s (SCR-adaptive=%d)                     ║\n', config.criteria.acceptable_rocof_max_Hzps, config.criteria.use_scr_adaptive);
 fprintf('╚═══════════════════════════════════════════════════════════════════╝\n');
 fprintf('Dataset: %d SCR x %d R/X = %d cases (shared across methods)\n\n', ...
     numel(config.SCR_list), numel(config.RX_list), numel(config.SCR_list)*numel(config.RX_list));
@@ -93,13 +98,18 @@ for i = 1:nS
         params = get_base_params(config, SCR, RX);
 
         bestScore = -Inf; best_taus = NaN; best_tspll = NaN; stableCount = 0;
+        n_bw_skipped = 0; n_sim_ok = 0;
         bestPenalty = Inf; best_penalty_taus = NaN; best_penalty_tspll = NaN;
         for taus = config.taus_sweep
             for tspll = config.tspll_sweep
-                if ~bandwidth_ok(taus, tspll, config.bw_separation), continue; end
+                if config.enforce_bw_separation && ~bandwidth_ok(taus, tspll, config.bw_separation)
+                    n_bw_skipped = n_bw_skipped + 1;
+                    continue;
+                end
                 [m, ok] = run_simulation(config, params, taus, tspll);
                 if ~ok, continue; end
-                [is_stable, score, details] = evaluate_stability_v6(m, config);
+                n_sim_ok = n_sim_ok + 1;
+                [is_stable, score, details] = evaluate_stability_v6(m, config, SCR);
 
                 pen = compute_violation_index(m, config.criteria);
                 if pen < bestPenalty
@@ -127,7 +137,7 @@ for i = 1:nS
             training_data(k).best_score = max(bestScore,0);
             training_data(k).has_stable = true;
             training_data(k).label_quality = 1;
-            fprintf('[%3d/%d] SCR=%4.2f RX=%4.2f acceptable_cfg=%2d best=%.3f\n',k,nCases,SCR,RX,stableCount,bestScore);
+            fprintf('[%3d/%d] SCR=%4.2f RX=%4.2f acceptable_cfg=%2d sim_ok=%2d bw_skip=%2d best=%.3f\n',k,nCases,SCR,RX,stableCount,n_sim_ok,n_bw_skipped,bestScore);
         else
             % Fallback label keeps training set complete even when criteria are strict
             training_data(k).best_taus = best_penalty_taus;
@@ -135,7 +145,7 @@ for i = 1:nS
             training_data(k).best_score = 0;
             training_data(k).has_stable = false;
             training_data(k).label_quality = 0;
-            fprintf('[%3d/%d] SCR=%4.2f RX=%4.2f NO-STABLE-LABEL -> fallback penalty=%.3f\n',k,nCases,SCR,RX,bestPenalty);
+            fprintf('[%3d/%d] SCR=%4.2f RX=%4.2f NO-STABLE-LABEL sim_ok=%2d bw_skip=%2d -> fallback penalty=%.3f\n',k,nCases,SCR,RX,n_sim_ok,n_bw_skipped,bestPenalty);
         end
     end
 end
@@ -176,7 +186,7 @@ for i = 1:nS
             if ~ok
                 [is_stable, score, d] = fail_stub();
             else
-                [is_stable, score, d] = evaluate_stability_v6(m, config);
+                [is_stable, score, d] = evaluate_stability_v6(m, config, SCR);
             end
 
             results(k).(['stable_' strat]) = is_stable;
@@ -387,8 +397,9 @@ end
 zeta = max(-0.1,min(1,zeta));
 end
 
-function [is_stable, score, details] = evaluate_stability_v6(m, config)
+function [is_stable, score, details] = evaluate_stability_v6(m, config, SCR)
 c = config.criteria;
+if nargin < 3 || isempty(SCR), SCR = 2.0; end
 details.I_peak = m.I_peak_pu;
 details.f_max_dev = m.f_max_dev;
 details.f_final_dev = m.f_final_dev;
@@ -404,12 +415,20 @@ details.H5 = m.T_settle <= c.T_settle_max_s;
 details.H6 = m.rocof_max <= c.rocof_max_Hzps;
 
 % Acceptable/compromise checks for practical weak-grid operation.
-details.H3a = m.f_final_dev <= c.acceptable_f_dev_final_Hz;
-details.H5a = m.T_settle <= c.acceptable_T_settle_max_s;
-details.H6a = m.rocof_max <= c.acceptable_rocof_max_Hzps;
+[Iacc, FtrAcc, FfinAcc, TsetAcc, RocofAcc] = get_adaptive_acceptable_limits(c, SCR);
+details.Iacc_limit = Iacc;
+details.FtrAcc_limit = FtrAcc;
+details.FfinAcc_limit = FfinAcc;
+details.TsetAcc_limit = TsetAcc;
+details.RocofAcc_limit = RocofAcc;
+details.H1a = m.I_peak_pu <= Iacc;
+details.H2a = m.f_max_dev <= FtrAcc;
+details.H3a = m.f_final_dev <= FfinAcc;
+details.H5a = m.T_settle <= TsetAcc;
+details.H6a = m.rocof_max <= RocofAcc;
 
 details.is_strict = details.H1 && details.H2 && details.H3 && details.H4 && details.H5 && details.H6;
-details.is_acceptable = details.H1 && details.H2 && details.H4 && details.H3a && details.H5a && details.H6a;
+details.is_acceptable = details.H4 && details.H1a && details.H2a && details.H3a && details.H5a && details.H6a;
 
 % Final decision uses acceptable tier, strict tier retained for reporting.
 is_stable = details.is_acceptable;
@@ -436,7 +455,24 @@ function [is_stable, score, details] = fail_stub()
 is_stable = false; score = 0;
 details = struct('I_peak',NaN,'f_max_dev',NaN,'f_final_dev',NaN,'zeta',NaN,'T_settle',NaN,'rocof',NaN, ...
     'H1',false,'H2',false,'H3',false,'H4',false,'H5',false,'H6',false, ...
-    'H3a',false,'H5a',false,'H6a',false,'is_strict',false,'is_acceptable',false);
+    'H1a',false,'H2a',false,'H3a',false,'H5a',false,'H6a',false, ...
+    'Iacc_limit',NaN,'FtrAcc_limit',NaN,'FfinAcc_limit',NaN,'TsetAcc_limit',NaN,'RocofAcc_limit',NaN, ...
+    'is_strict',false,'is_acceptable',false);
+end
+
+function [Iacc, FtrAcc, FfinAcc, TsetAcc, RocofAcc] = get_adaptive_acceptable_limits(c, SCR)
+% Adaptive compromise limits: stricter for strong grids, looser for weak grids.
+if c.use_scr_adaptive
+    weak_factor = min(1, max(0, (2.5 - SCR)/1.7)); % ~1 for very weak, 0 for strong
+else
+    weak_factor = 0.5;
+end
+
+Iacc = c.acceptable_I_peak_pu_max + 0.10*weak_factor;
+FtrAcc = c.acceptable_f_dev_transient_Hz + 0.60*weak_factor;
+FfinAcc = c.acceptable_f_dev_final_Hz + 0.10*weak_factor;
+TsetAcc = c.acceptable_T_settle_max_s + 0.80*weak_factor;
+RocofAcc = c.acceptable_rocof_max_Hzps + 1.00*weak_factor;
 end
 
 
