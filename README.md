@@ -102,3 +102,31 @@ This repository contains comprehensive test reports and analyses for three criti
 **Contributors**: Yazan Eissa, Lawal Ibrahim Okikiola  
 **License**: CC BY-NC-SA 4.0  
 **Contact**: [ibromatics38@gmail.com] | [[GitHub Profile](https://github.com/ibromatics38)]
+
+
+## GFL Converter Stability Benchmark (MATLAB/Simulink)
+This repository now includes `GFL_STABILITY_STUDY_v6.m`, an end-to-end benchmark script for **fair** controller tuning comparison across:
+- Baseline
+- LinearPLL
+- LinearBoth
+- LookupTable
+- GPR_AI
+
+### What is improved
+- A single shared dataset (`SCR_list × RX_list`) is used to train and evaluate all methods.
+- Stability is assessed with explicit hard criteria `H1..H6` (including corrected final-frequency and RoCoF limit).
+- Extended analytics generate 10 benchmark figures (rates, heatmaps, failure breakdown, RoCoF boxplot, damping CDF, parameter surfaces, Pareto plot).
+- Added 4 additional **small-signal proxy** figures (damping maps, margin distribution, settling-vs-damping, weak-grid sensitivity).
+- Important: proxy small-signal plots are data-driven from time-domain responses; full eigenvalue/impedance linearization remains optional and model-dependent.
+- Added robust label fallback for strict scenarios: when no point satisfies all hard criteria, the least-violation candidate is used for training continuity while evaluation still uses strict pass/fail.
+- Added two-tier decision logic: **strict** (`H1..H6`) and **acceptable/compromise** (relaxed `H3/H5/H6`) so weak-grid edge cases can be operationally accepted while strict compliance is still reported.
+- Added SCR-adaptive acceptable thresholds (H1a/H2a/H3a/H5a/H6a) and relaxed practical bandwidth-separation setting for improved coverage in non-weak and borderline grid conditions.
+- Stability is now **three-layered** for physical credibility and practicality: strict compliance (`H1..H6`), acceptable operation (`H1a..H6a`), and a pragmatic safety-envelope tier (`HS1..HS5`) using a new Pragmatic Stability Index (PSI).
+
+### Run
+1. Ensure Simulink model `GFL_LCL_WeakGrid_AI` is on MATLAB path.
+2. Run `GFL_STABILITY_STUDY_v6` in MATLAB.
+3. Outputs are saved under `results_v6/` (PNG figures + MAT file).
+4. Current practical bandwidth gate is `omega_PLL <= 0.5 * omega_CI` (adjustable in config).
+5. Debug tips: set `config.debug.show_sim_errors = true` to print per-case simulation errors (useful if `sim_ok=0` with many fallbacks).
+
